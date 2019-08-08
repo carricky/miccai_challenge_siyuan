@@ -13,6 +13,7 @@ from sklearn.feature_selection import mutual_info_classif
 from sklearn.pipeline import Pipeline
 from sklearn import metrics
 from sklearn.svm import SVC
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.metrics import accuracy_score, auc
@@ -20,7 +21,7 @@ from scipy import stats
 
 import numpy as np
 import scipy.io as sio
-import random as rd
+
 import matplotlib.pyplot as plt 
 
 # ----------------------------------------------------------------------------------------- #
@@ -74,10 +75,10 @@ train_edges_cc = train_edges[(num_edge_aal+num_edge_ho):(num_edge_aal+num_edge_h
 # ----------------------------------------------------------------------------------------- #
 # ----------------------------------------------------------------------------------------- #
 # Prepare the validation data
-validation_mats_aal_dir = "/home/weid/Desktop/miccai_challenge_siyuan-master/validation/validation_mats_aal.mat"
-validation_mats_cc_dir = "/home/weid/Desktop/miccai_challenge_siyuan-master/validation/validation_mats_cc.mat"
-validation_mats_ho_dir = "/home/weid/Desktop/miccai_challenge_siyuan-master/validation/validation_mats_ho.mat"
-validation_label_dir = "/home/weid/Desktop/miccai_challenge_siyuan-master/validation/validation_label.mat"
+validation_mats_aal_dir = "/Users/wei/Desktop/miccai_challenge_siyuan-master/validation/validation_mats_aal.mat"
+validation_mats_cc_dir = "/Users/wei/Desktop/miccai_challenge_siyuan-master/validation/validation_mats_cc.mat"
+validation_mats_ho_dir = "/Users/wei/Desktop/miccai_challenge_siyuan-master/validation/validation_mats_ho.mat"
+validation_label_dir = "/Users/wei/Desktop/miccai_challenge_siyuan-master/validation/validation_label.mat"
 
 validation_mats_aal_temp = sio.loadmat(validation_mats_aal_dir) # this deals with -v7.3 .mat file
 validation_mats_aal = validation_mats_aal_temp["all_mats_aal"]
@@ -119,84 +120,26 @@ validation_edges_cc = validation_edges[(num_edge_aal+num_edge_ho):(num_edge_aal+
 
 ## PCA on edges across all parcellations and then use SVM
 
-pipe_steps = [('scalar', StandardScaler()), ('pca', PCA()), ("clf", SVC(kernel = "rbf", probability=True))]
+pipe_steps = [('scalar', StandardScaler()), ('pca', PCA()), ("clf", RandomForestClassifier())]
 
 check_parameters = {
         'pca__n_components': [2, 4, 10, 50, 100],
-        'clf__gamma': [0.001, 0.01, 0.05, 0.1, 0.5, 1, 5]
+        'clf__max_depth': [20, 30, 50],
+        'clf__min_samples_split': [2, 5, 8]
         }
 pipeline = Pipeline(pipe_steps)
-cpm_svm_grid = GridSearchCV(pipeline, param_grid=check_parameters, cv=5)
-cpm_svm_grid.fit(train_edges.T, train_label)
+cpm_rf_grid = GridSearchCV(pipeline, param_grid=check_parameters, cv=5)
+cpm_rf_grid.fit(train_edges.T, train_label)
 
-
-## Best model is 2 components with gamma = 0.001, and prediction accuracy is 0.555
+## Best model is 50 components with max_depth = 30, min_samples_split = 8, accuracy is 0.615
 
 
 # ----------------------------------------------------------------------------------------- #
 ## Validate the best model on the validation dataset
 ## ## Evaluation Measures: Calculate accuracy, auc, sensitivity, specificity, recall, F-measure
-y_predict = cpm_svm_grid.predict(validation_edges.T)
+y_predict = cpm_rf_grid.predict(validation_edges.T)
 accuracy = accuracy_score(validation_label,y_predict) ## Prediction accuracy
-prob_predict = cpm_svm_grid.predict_proba(validation_edges.T)
-prob_predict = prob_predict.max(axis = 1)
-fpr, tpr, thresholds = metrics.roc_curve(np.array(validation_label), np.array(prob_predict))
-metrics.auc(fpr, tpr) ## AUC values
-cmatrix = metrics.confusion_matrix(validation_label, y_predict) ## confusion matrix
-sens = cmatrix[1, 1] / (cmatrix[1, 0] + cmatrix[1, 1])
-spec = cmatrix[0, 0] / (cmatrix[0, 0] + cmatrix[0, 1])
-
-print(metrics.classification_report(validation_label, y_predict))
-
-
-
-
-# ----------------------------------------------------------------------------------------- #
-# ----------------------------------------------------------------------------------------- #
-# Find the most influtial points then retrain the model
-pipe_steps = [('scalar', StandardScaler()), ('pca', PCA()), ("clf", SVC(kernel = "rbf", probability=True))]
-
-check_parameters = {
-        'pca__n_components': [2, 4, 10, 50, 100],
-        'clf__gamma': [0.001, 0.01, 0.05, 0.1, 0.5, 1, 5]
-        }
-pipeline = Pipeline(pipe_steps)
-cpm_svm_grid_sub = GridSearchCV(pipeline, param_grid=check_parameters, cv=5, n_jobs = -1)
-
-influntial_scores = np.zeros(num_sub)
-for i_sub in range(num_sub):
-    new_train_edges =  np.delete(train_edges, i_sub, axis = 1)
-    new_train_label = np.delete(train_label, i_sub)
-    cpm_svm_grid_sub.fit(new_train_edges.T, new_train_label)
-    influntial_scores[i_sub] = cpm_svm_grid_sub.best_score_
-    print('subject:',i_sub, '\n')
-
-influntial_scores = influntial_scores - cpm_svm_grid.best_score_
-# select subjects that have influntial_scores larger than 0.01 and replicate each by 5 times
-
-aug_sub = np.where(influntial_scores > 0.01)
-aug_sub = np.reshape(aug_sub, [-1])
-
-rd.seed(1995)
-sigma = 1
-aug_noise = np.reshape(np.random.normal(0, 1, np.shape(train_edges)[0] * 5 * len(aug_sub)), (np.shape(train_edges)[0],  5 * len(aug_sub)))
-
-aug_train_edges = np.concatenate((train_edges, np.add(np.repeat(train_edges[:, aug_sub], 5, axis =1), aug_noise)), axis=1) 
-aug_train_labels = np.concatenate((train_label, np.repeat(train_label[aug_sub], 5)), axis=0) 
-
-
-
-# ----------------------------------------------------------------------------------------- #
-# Retrain the model with augmented data
-cpm_svm_grid_aug = GridSearchCV(pipeline, param_grid=check_parameters, cv=5)
-cpm_svm_grid_aug.fit(aug_train_edges.T, aug_train_labels)
-
-# ----------------------------------------------------------------------------------------- #
-## Validate the best model on the validation dataset
-## ## Evaluation Measures: Calculate accuracy, auc, sensitivity, specificity, recall, F-measure
-y_predict = cpm_svm_grid_aug.predict(validation_edges.T)
-accuracy = accuracy_score(validation_label,y_predict) ## Prediction accuracy
-prob_predict = cpm_svm_grid_aug.predict_proba(validation_edges.T)
+prob_predict = cpm_rf_grid.predict_proba(validation_edges.T)
 prob_predict = prob_predict.max(axis = 1)
 fpr, tpr, thresholds = metrics.roc_curve(np.array(validation_label), np.array(prob_predict))
 metrics.auc(fpr, tpr) ## AUC values
@@ -211,27 +154,28 @@ print(metrics.classification_report(validation_label, y_predict))
 # ----------------------------------------------------------------------------------------- #
 # ----------------------------------------------------------------------------------------- #
 # Majority Vote
-pipe_steps = [('scalar', StandardScaler()), ('pca', PCA()), ("clf", SVC(kernel = "rbf", probability=True))]
+pipe_steps = [('scalar', StandardScaler()), ('pca', PCA()), ("clf", RandomForestClassifier())]
 
 check_parameters = {
-        'pca__n_components': [2, 10, 50],
-        'clf__gamma': [0.001, 0.01, 0.05, 0.1, 0.5, 1, 5]
+        'pca__n_components': [2, 4, 10, 50, 100],
+        'clf__max_depth': [20, 30, 50],
+        'clf__min_samples_split': [2, 5, 8]
         }
 pipeline = Pipeline(pipe_steps)
-aal_svm_grid = GridSearchCV(pipeline, param_grid=check_parameters, cv=5)
-ho_svm_grid = GridSearchCV(pipeline, param_grid=check_parameters, cv=5)
-cc_svm_grid = GridSearchCV(pipeline, param_grid=check_parameters, cv=5)
-aal_svm_grid.fit(train_edges_aal.T, train_label)
-ho_svm_grid.fit(train_edges_ho.T, train_label)
-cc_svm_grid.fit(train_edges_cc.T, train_label)
+aal_rf_grid = GridSearchCV(pipeline, param_grid=check_parameters, cv=5)
+ho_rf_grid = GridSearchCV(pipeline, param_grid=check_parameters, cv=5)
+cc_rf_grid = GridSearchCV(pipeline, param_grid=check_parameters, cv=5)
+aal_rf_grid.fit(train_edges_aal.T, train_label)
+ho_rf_grid.fit(train_edges_ho.T, train_label)
+cc_rf_grid.fit(train_edges_cc.T, train_label)
 
 
-aal_predict = aal_svm_grid.predict(validation_edges_aal.T)
-aal_predict_prob = aal_svm_grid.predict_proba(validation_edges_aal.T)
-ho_predict = ho_svm_grid.predict(validation_edges_ho.T)
-ho_predict_prob = ho_svm_grid.predict_proba(validation_edges_ho.T)
-cc_predict = cc_svm_grid.predict(validation_edges_cc.T)
-cc_predict_prob = cc_svm_grid.predict_proba(validation_edges_cc.T)
+aal_predict = aal_rf_grid.predict(validation_edges_aal.T)
+aal_predict_prob = aal_rf_grid.predict_proba(validation_edges_aal.T)
+ho_predict = ho_rf_grid.predict(validation_edges_ho.T)
+ho_predict_prob = ho_rf_grid.predict_proba(validation_edges_ho.T)
+cc_predict = cc_rf_grid.predict(validation_edges_cc.T)
+cc_predict_prob = cc_rf_grid.predict_proba(validation_edges_cc.T)
 
 majority_predict = np.concatenate((aal_predict, ho_predict, cc_predict))
 majority_predict = np.reshape(majority_predict, [40, 3])
@@ -256,76 +200,40 @@ spec_major = cmatrix_major[0, 0] / (cmatrix_major[0, 0] + cmatrix_major[0, 1])
 
 
 # ----------------------------------------------------------------------------------------- #
-# -------------------------------------Failed ?------------------------------ #
+# ----------------------------------------------------------------------------------------- #
 ## Univariate feature selection on edges across all parcellations and then use SVM
-pipe_steps = [('selection', SelectFdr(score_func = mutual_info_classif)), ('clf', SVC(kernel = "rbf"))]
+pipe_steps = [('clf', RandomForestClassifier())]
 
 check_parameters = {
-        'selection__alpha': [0.001, 0.01, 0.05, 0.1, 0.5],
-        'clf__gamma': [0.01, 0.05, 0.1, 0.5, 1, 5]
+        'clf__max_depth': [20, 30, 50],
+        'clf__min_samples_split': [2, 5, 8]
         }
 pipeline = Pipeline(pipe_steps)
-cpm_svm_grid = GridSearchCV(pipeline, param_grid=check_parameters, cv=5)
-cpm_svm_grid.fit(train_edges.T, train_label)
+rf_grid = GridSearchCV(pipeline, param_grid=check_parameters, cv=5)
+rf_grid.fit(train_edges.T, train_label)
 
 
+# ----------------------------------------------------------------------------------------- #
+## Validate the best model on the validation dataset
+## ## Evaluation Measures: Calculate accuracy, auc, sensitivity, specificity, recall, F-measure
+y_predict = rf_grid.predict(validation_edges.T)
+accuracy = accuracy_score(validation_label,y_predict) ## Prediction accuracy
+prob_predict = rf_grid.predict_proba(validation_edges.T)
+prob_predict = prob_predict.max(axis = 1)
+fpr, tpr, thresholds = metrics.roc_curve(np.array(validation_label), np.array(prob_predict))
+metrics.auc(fpr, tpr) ## AUC values
+cmatrix = metrics.confusion_matrix(validation_label, y_predict) ## confusion matrix
+sens = cmatrix[1, 1] / (cmatrix[1, 0] + cmatrix[1, 1])
+spec = cmatrix[0, 0] / (cmatrix[0, 0] + cmatrix[0, 1])
 
-
-
-
+print(metrics.classification_report(validation_label, y_predict))
 
 
 # ----------------------------------------------------------------------------------------- #
 # ----------------------------------------------------------------------------------------- #
-# Visulize PCA
-scaler1 = StandardScaler()
-scaler1.fit(train_edges.T)
-feature_scaled = scaler1.transform(train_edges.T)
+## Reference: https://towardsdatascience.com/visualizing-support-vector-machine-decision-boundary-69e7591dacea
 
-pca1 = PCA(n_components = 4)
-pca1.fit(feature_scaled)
-feature_scaled_pca = pca1.transform(feature_scaled) 
 
-ex_variance=np.var(feature_scaled_pca,axis=0)
-ex_variance_ratio = ex_variance/np.sum(ex_variance)
-print (ex_variance_ratio) # 1st PC explains 80% variance 
-
-## 1st and 2nd PCs plot
-Xax=feature_scaled_pca[:,0]
-Yax=feature_scaled_pca[:,1]
-labels = train_label
-cdict={0:'red',1:'green'}
-labl={0:'Control',1:'ADHD'}
-marker={0:'*',1:'o'}
-alpha={0:.3, 1:.5}
-fig,ax=plt.subplots(figsize=(7,5))
-fig.patch.set_facecolor('white')
-for l in np.unique(labels):
- ix=np.where(labels==l)
- ax.scatter(Xax[ix],Yax[ix],c=cdict[l],s=40,
-           label=labl[l],marker=marker[l],alpha=alpha[l])
-# for loop ends
-plt.xlabel("First Principal Component",fontsize=14)
-plt.ylabel("Second Principal Component",fontsize=14)
-plt.legend()
-plt.show()
-
-## 3rd and 4th PCs plot
-Xax=feature_scaled_pca[:,2]
-Yax=feature_scaled_pca[:,3]
-labels = train_label
-cdict={0:'red',1:'green'}
-labl={0:'Control',1:'ADHD'}
-marker={0:'*',1:'o'}
-alpha={0:.3, 1:.5}
-fig,ax=plt.subplots(figsize=(7,5))
-fig.patch.set_facecolor('white')
-for l in np.unique(labels):
- ix=np.where(labels==l)
- ax.scatter(Xax[ix],Yax[ix],c=cdict[l],s=40,
-           label=labl[l],marker=marker[l],alpha=alpha[l])
-# for loop ends
-plt.xlabel("Third Principal Component",fontsize=14)
-plt.ylabel("Fourth Principal Component",fontsize=14)
-plt.legend()
-plt.show()
+np.savetxt('all_edges_aalt.txt', train_edges_aal)
+np.savetxt('all_edges_ho.txt', train_edges_ho)
+np.savetxt('all_edges_cc.txt', train_edges_cc)
